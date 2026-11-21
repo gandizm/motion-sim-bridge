@@ -33,3 +33,16 @@ python compare.py local/scene.xml local/command.jsonl local/feedback.jsonl --com
 **推物。** `--dynamics` 开启自由物体响应，采用不大于 1 ms 的基础时间步。每个候选步计算接触解并修正自由物体位置，随后检查扫掠与末态再决定接受或回退。刚性固定障碍的数值容差为 0.0002 mm。动态可动物体接触及轮地支撑容许最多 0.4 mm 微量嵌入，薄件按厚度进一步收紧。报告的 `max_accepted_penetration_mm` 是已保存状态的活动接触最大实测穿入量。质量、摩擦、轮地侧滑和控制器响应仍需实测标定。
 
 **查看和对照。** 录像保存约 60 Hz 的已接受广义坐标和最终状态，包含自由物体及两爪。查看器在末态停留，关闭窗口退出。`play.py --check` 可无窗口校验记录与场景。对照工具分别回放两条轨迹，在共同时间区间按相同时间插值计算位置、航向和爪角偏差。应使用同一坐标原点与时钟；时钟偏移需要在输入端校准。输出携带轨迹和顶层场景 SHA-256、引擎版本及调用方提供的两个代码版本。外部引用的网格和配置由调用方随场景一同锁定。
+
+## 双图地图
+
+单独打开 `map_view.html`，选择本机地图即可并排查看实物平面和二维控制坐标。两图同步缩放、平移、选物与读数，左图显示区域和物件，右图显示毫米网格、参考点及航向。可载入两端各自的 JSON 或逐行 JSON 轨迹；多帧使用同一时钟的 `t_s`。上位位姿字段为 `x_m, y_m, yaw_deg`；下位反馈字段为 `x_mm, y_mm, heading_mdeg`。选定时刻显示各轨迹最近一次已采样的位姿。孤立快照可省时间。
+
+```bash
+python field_map.py build local/field-map.json local
+python field_map.py upper path/to/map_app.py local/field-map.json -- --demo
+```
+
+第一条命令生成自带本机地图的 `viewer.html` 和 C11 头文件 `field_map.h`。第二条使用现有 OpenCV 地图程序的 `world_to_pixel` 投影，仅替换底图绘制。两端共读同一份几何。C 表使用毫米顶点、微米高度，调用 `fm_contains_xy` 查询含边界的点。车体姿态、几何扫掠和动态接触由回放程序处理。
+
+输入地图为 `schema=field-map-v1`、`frame=field`、`units=m` 的 JSON。`bounds_m` 依次为最小 X、最小 Y、最大 X、最大 Y；`features` 每项包含唯一 id、几何类别 layer、显示名称 label、十六进制 color、顶点序列 xy_m 和高度区间 z_m。可用 labels 提供 x_m/y_m/text，用 starts 提供 id、upper_m、lower_m、yaw_deg。生成物、运行日志和环境数据留在本机。

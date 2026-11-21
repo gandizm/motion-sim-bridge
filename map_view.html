@@ -1,0 +1,576 @@
+<!doctype html>
+<html lang="zh-CN">
+  <meta charset="utf-8" /><meta
+    name="viewport"
+    content="width=device-width,initial-scale=1"
+  />
+  <title>地图对照</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0 auto;
+      padding: 22px;
+      max-width: 1600px;
+      background: #f4f5f3;
+      color: #23383d;
+      font:
+        15px system-ui,
+        "Microsoft YaHei",
+        sans-serif;
+    }
+    header,
+    nav,
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    header {
+      justify-content: space-between;
+    }
+    h1 {
+      font-size: 25px;
+      margin: 0;
+    }
+    h2 {
+      font-size: 18px;
+      margin: 0 0 4px;
+    }
+    button,
+    label.file,
+    select {
+      font: inherit;
+      padding: 6px 10px;
+      background: white;
+      border: 1px solid #bbc7cb;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    input[type="file"] {
+      display: none;
+    }
+    .panels {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin: 16px 0;
+    }
+    .panel {
+      background: white;
+      border: 1px solid #d2dad9;
+      border-radius: 8px;
+      padding: 12px;
+      min-width: 0;
+    }
+    svg {
+      display: block;
+      width: 100%;
+      touch-action: none;
+    }
+    .status {
+      font-variant-numeric: tabular-nums;
+      background: white;
+      border-radius: 6px;
+      padding: 10px 14px;
+    }
+    .muted {
+      color: #52666c;
+      font-size: 14px;
+    }
+    .key {
+      font-weight: 600;
+    }
+    input[type="range"] {
+      width: 190px;
+    }
+    #error {
+      color: #a62c30;
+    }
+    @media (max-width: 760px) {
+      .panels {
+        grid-template-columns: 1fr;
+      }
+      body {
+        padding: 12px;
+      }
+    }
+  </style>
+  <header>
+    <h1>地图对照</h1>
+    <nav>
+      <label class="file"
+        >载入地图<input id="mapFile" type="file" accept=".json" /></label
+      ><label class="file"
+        >上位轨迹<input
+          id="upperFile"
+          type="file"
+          accept=".json,.jsonl" /></label
+      ><label class="file"
+        >下位反馈<input
+          id="lowerFile"
+          type="file"
+          accept=".json,.jsonl" /></label
+      ><button id="home">全图</button>
+    </nav>
+  </header>
+  <div class="panels">
+    <section class="panel">
+      <h2>场地平面</h2>
+      <svg id="plan" viewBox="0 0 620 620" aria-label="场地平面图"></svg>
+    </section>
+    <section class="panel">
+      <h2>控制坐标 <span class="muted">/ mm</span></h2>
+      <svg id="control" viewBox="0 0 620 620" aria-label="毫米坐标图"></svg>
+    </section>
+  </div>
+  <div class="status">
+    <strong id="readout">载入本机地图</strong><span id="detail"></span>
+  </div>
+  <p class="muted">
+    点选物体或空地读坐标，滚轮缩放，拖动平移。圆点为上位参考，菱形为下位参考，箭头为车头。
+  </p>
+  <div class="status">
+    <label
+      >回放
+      <input
+        id="slider"
+        type="range"
+        min="0"
+        max="0"
+        value="0"
+        disabled /></label
+    ><span id="clock"></span><span style="color: #006db5">● 上位轨迹</span
+    ><span style="color: #b34372">◆ 下位反馈</span>
+  </div>
+  <p id="error" role="alert"></p>
+  <script type="application/json" id="embedded">
+    null
+  </script>
+  <script>
+    "use strict";
+    const $ = (id) => document.getElementById(id),
+      svgns = "http://www.w3.org/2000/svg",
+      surfaces = [$("plan"), $("control")];
+    let selected = null;
+    let map = null,
+      center = [0, 0],
+      span = 1,
+      pick = null,
+      paths = [[], []],
+      timeline = [],
+      drag = null;
+    function elem(svg, tag, attrs, value) {
+      const e = document.createElementNS(svgns, tag);
+      for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+      if (value !== undefined) e.textContent = value;
+      svg.appendChild(e);
+      return e;
+    }
+    function px(x, y) {
+      return [
+        310 + ((x - center[0]) * 526) / span,
+        310 - ((y - center[1]) * 526) / span,
+      ];
+    }
+    function point(x, y) {
+      return [
+        center[0] + ((x - 310) * span) / 526,
+        center[1] - ((y - 310) * span) / 526,
+      ];
+    }
+    function coords(event, svg) {
+      const p = new DOMPoint(event.clientX, event.clientY).matrixTransform(
+        svg.getScreenCTM().inverse(),
+      );
+      return [p.x, p.y];
+    }
+    function shape(svg, xys, attrs, tag = "polygon") {
+      return elem(svg, tag, {
+        points: xys.map((p) => px(...p).join(",")).join(" "),
+        ...attrs,
+      });
+    }
+    function label(svg, x, y, text, size = 12, color = "#223b46", dy = 0) {
+      const [a, b] = px(x, y);
+      return elem(
+        svg,
+        "text",
+        {
+          x: a,
+          y: b + dy,
+          "text-anchor": "middle",
+          "dominant-baseline": "central",
+          "font-size": size,
+          fill: color,
+          "pointer-events": "none",
+        },
+        text,
+      );
+    }
+    function marker(svg, x, y, angle, color, diamond = false) {
+      const [a, b] = px(x, y),
+        rad = (angle * Math.PI) / 180,
+        u = Math.cos(rad),
+        v = -Math.sin(rad);
+      elem(svg, "line", {
+        x1: a,
+        y1: b,
+        x2: a + 21 * u,
+        y2: b + 21 * v,
+        stroke: color,
+        "stroke-width": 2,
+      });
+      elem(svg, "polygon", {
+        points: [
+          [a + 25 * u, b + 25 * v],
+          [a + 16 * u - 4 * v, b + 16 * v + 4 * u],
+          [a + 16 * u + 4 * v, b + 16 * v - 4 * u],
+        ]
+          .map((p) => p.join(","))
+          .join(" "),
+        fill: color,
+      });
+      if (diamond)
+        elem(svg, "path", {
+          d: `M ${a} ${b - 4} l 4 4 -4 4 -4 -4 Z`,
+          fill: color,
+        });
+      else elem(svg, "circle", { cx: a, cy: b, r: 3, fill: color });
+    }
+    function reset() {
+      if (!map) return;
+      const [x, y, X, Y] = map.bounds_m;
+      center = [(x + X) / 2, (y + Y) / 2];
+      span = Math.max(X - x, Y - y);
+      render();
+    }
+    function tickStep() {
+      const raw = span / 6,
+        dec = 10 ** Math.floor(Math.log10(raw));
+      return [1, 2, 5, 10].find((n) => n * dec >= raw - 1e-12) * dec;
+    }
+    function readMap(m) {
+      if (
+        m?.schema !== "field-map-v1" ||
+        m.frame !== "field" ||
+        m.units !== "m" ||
+        !Array.isArray(m.features) ||
+        m.bounds_m?.length !== 4 ||
+        !m.bounds_m.every(Number.isFinite) ||
+        m.bounds_m[2] <= m.bounds_m[0] ||
+        m.bounds_m[3] <= m.bounds_m[1]
+      )
+        throw Error("地图坐标协议或范围无效");
+      for (const f of m.features) {
+        if (
+          !/^#[a-f0-9]{6}$/i.test(f.color) ||
+          !Array.isArray(f.xy_m) ||
+          f.xy_m.length < 3 ||
+          !f.xy_m.every((p) => p.length === 2 && p.every(Number.isFinite))
+        )
+          throw Error("几何图层无效");
+      }
+      map = m;
+      pick = null;
+      selected = null;
+      paths = [[], []];
+      timeUpdate();
+      $("readout").textContent = "原点在场地中心  ·  X 向右  ·  Y 向上";
+      $("detail").textContent = "";
+      reset();
+    }
+    function sample(trace, t) {
+      if (!trace.length || t < trace[0].t || t > trace.at(-1).t) return null;
+      let l = 0,
+        r = trace.length;
+      while (l + 1 < r) {
+        const m = (l + r) >> 1;
+        if (trace[m].t <= t) l = m;
+        else r = m;
+      }
+      return trace[l];
+    }
+    function render() {
+      if (!map) return;
+      const tick = tickStep();
+      surfaces.forEach((svg, idx) => {
+        svg.replaceChildren();
+        elem(svg, "rect", {
+          width: 620,
+          height: 620,
+          fill: idx ? "#f5f8fa" : "#faf9f6",
+        });
+        for (const f of map.features)
+          shape(svg, f.xy_m, {
+            fill: f.color,
+            stroke:
+              f.id === selected
+                ? "#112d47"
+                : f.layer === "object"
+                  ? "#ffffff"
+                  : f.color,
+            "stroke-width":
+              f.id === selected ? 3 : f.layer === "object" ? 0.5 : 1,
+            opacity: idx && f.layer !== "barrier" ? 0.62 : 1,
+            "data-id": f.id,
+          });
+        if (idx) {
+          for (
+            let k = Math.ceil((center[0] - 0.57 * span) / tick);
+            k <= (center[0] + 0.57 * span) / tick;
+            k++
+          ) {
+            const x = k * tick,
+              a = px(x, 0)[0];
+            elem(svg, "line", {
+              x1: a,
+              x2: a,
+              y1: 20,
+              y2: 585,
+              stroke: "#405967",
+              "stroke-opacity": k === 0 ? 0.6 : 0.16,
+              "stroke-dasharray": "3 3",
+              "pointer-events": "none",
+            });
+            elem(
+              svg,
+              "text",
+              { x: a, y: 608, "font-size": 11, "text-anchor": "middle" },
+              Math.round(x * 1000),
+            );
+          }
+          for (
+            let k = Math.ceil((center[1] - 0.57 * span) / tick);
+            k <= (center[1] + 0.57 * span) / tick;
+            k++
+          ) {
+            const y = k * tick,
+              b = px(0, y)[1];
+            elem(svg, "line", {
+              x1: 35,
+              x2: 600,
+              y1: b,
+              y2: b,
+              stroke: "#405967",
+              "stroke-opacity": k === 0 ? 0.6 : 0.16,
+              "stroke-dasharray": "3 3",
+              "pointer-events": "none",
+            });
+            elem(
+              svg,
+              "text",
+              { x: 1, y: b, "font-size": 10 },
+              Math.round(y * 1000),
+            );
+          }
+        }
+        for (const t of map.labels || [])
+          label(
+            svg,
+            t.x_m,
+            t.y_m,
+            t.text,
+            12,
+            idx ? "#142c39" : "white",
+            idx && /^\d+$/.test(t.text) ? 17 : 0,
+          );
+        if (idx)
+          for (const a of map.starts || []) {
+            marker(svg, ...a.upper_m, a.yaw_deg, "#066fae");
+            marker(svg, ...a.lower_m, a.yaw_deg, "#a53f70", true);
+          }
+        const t = timeline[+$("slider").value];
+        for (let n = 0; n < 2; n++) {
+          const trace = paths[n],
+            color = n ? "#b34372" : "#006db5";
+          if (trace.length) {
+            shape(
+              svg,
+              trace.map((p) => [p.x, p.y]),
+              {
+                stroke: color,
+                "stroke-width": 2,
+                fill: "none",
+                "pointer-events": "none",
+              },
+              "polyline",
+            );
+            const p = sample(trace, t);
+            if (p) marker(svg, p.x, p.y, p.a, color, Boolean(n));
+          }
+        }
+        if (pick) {
+          const [x, y] = px(...pick);
+          elem(svg, "path", {
+            d: `M${x - 6} ${y}h12 M${x} ${y - 6}v12`,
+            stroke: "#041b1c",
+            "stroke-width": 2,
+            "pointer-events": "none",
+          });
+        }
+      });
+      $("clock").textContent = timeline.length
+        ? `t = ${timeline[+$("slider").value].toFixed(3)} s`
+        : "等待轨迹";
+    }
+    function timeUpdate() {
+      timeline = [...new Set(paths.flatMap((p) => p.map((r) => r.t)))].sort(
+        (a, b) => a - b,
+      );
+      $("slider").max = Math.max(0, timeline.length - 1);
+      $("slider").value = 0;
+      $("slider").disabled = !timeline.length;
+    }
+    function parseTrace(raw, lower) {
+      raw = raw.replace(/^\uFEFF/, "");
+      let items;
+      try {
+        const r = JSON.parse(raw);
+        items = Array.isArray(r) ? r : [r];
+      } catch {
+        items = raw
+          .trim()
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .map((x) => JSON.parse(x));
+      }
+      if (!items.length) throw Error("轨迹为空");
+      let last = -Infinity;
+      return items.map((r) => {
+        if (r.frame && r.frame !== "field") throw Error("请使用 field 坐标");
+        const p = r.pose || r;
+        if (
+          r.valid === false ||
+          p.valid === false ||
+          ["LOST", "STALE"].includes(r.quality)
+        )
+          throw Error("记录含无效定位，请先按有效段导入");
+        const t =
+          r.t_s ??
+          (r.timestamp_monotonic_ns === undefined
+            ? items.length === 1
+              ? 0
+              : NaN
+            : r.timestamp_monotonic_ns / 1e9);
+        const vals = lower
+          ? [p.x_mm, p.y_mm, p.heading_mdeg]
+          : [
+              p.x_m,
+              p.y_m,
+              p.yaw_deg ??
+                (p.yaw_rad === undefined
+                  ? undefined
+                  : (p.yaw_rad * 180) / Math.PI),
+            ];
+        if (!vals.every(Number.isFinite) || !Number.isFinite(t) || t <= last)
+          throw Error("字段、单位或时间无效；多帧须有严格递增的公共时钟");
+        last = t;
+        const k = lower ? 1000 : 1;
+        return { x: vals[0] / k, y: vals[1] / k, a: vals[2] / k, t };
+      });
+    }
+    for (const [n, id] of ["upperFile", "lowerFile"].entries())
+      $(id).onchange = async (e) => {
+        try {
+          if (!map) throw Error("请先载入地图");
+          paths[n] = parseTrace(await e.target.files[0].text(), Boolean(n));
+          timeUpdate();
+          render();
+          $("error").textContent = "";
+        } catch (err) {
+          $("error").textContent = err.message;
+        }
+        e.target.value = "";
+      };
+    $("mapFile").onchange = async (e) => {
+      try {
+        readMap(
+          JSON.parse((await e.target.files[0].text()).replace(/^\uFEFF/, "")),
+        );
+        $("error").textContent = "";
+      } catch (err) {
+        $("error").textContent = err.message;
+      }
+      e.target.value = "";
+    };
+    for (const svg of surfaces) {
+      svg.onwheel = (e) => {
+        if (!map) return;
+        e.preventDefault();
+        const p = coords(e, svg),
+          pre = point(...p);
+        span = Math.max(
+          0.025,
+          Math.min(100, span * Math.exp(Math.sign(e.deltaY) * 0.2)),
+        );
+        const post = point(...p);
+        center = [center[0] + pre[0] - post[0], center[1] + pre[1] - post[1]];
+        render();
+      };
+      svg.onpointerdown = (e) => {
+        if (!map) return;
+        const p = coords(e, svg);
+        drag = { p, c: [...center], obj: e.target.dataset.id, moved: false };
+        svg.setPointerCapture(e.pointerId);
+      };
+      svg.onpointermove = (e) => {
+        if (!drag) return;
+        const p = coords(e, svg),
+          dx = p[0] - drag.p[0],
+          dy = p[1] - drag.p[1];
+        if (Math.hypot(dx, dy) > 3 || drag.moved) {
+          drag.moved = true;
+          center = [
+            drag.c[0] - (dx * span) / 526,
+            drag.c[1] + (dy * span) / 526,
+          ];
+          render();
+        }
+      };
+      svg.onpointercancel = () => {
+        drag = null;
+      };
+      svg.onpointerup = (e) => {
+        if (!drag) return;
+        if (!drag.moved) {
+          pick = point(...coords(e, svg));
+          selected = drag.obj || null;
+          const f = map.features.find((f) => f.id === selected);
+          $("readout").textContent =
+            `X ${(pick[0] * 1000).toFixed(1)} mm　Y ${(pick[1] * 1000).toFixed(1)} mm`;
+          $("detail").textContent = f
+            ? f.label +
+              " · " +
+              f.id +
+              " · 边界 " +
+              [0, 1]
+                .map((i) => {
+                  const a = f.xy_m.map((p) => p[i] * 1000);
+                  return (
+                    (i ? "Y" : "X") +
+                    " [" +
+                    Math.min(...a).toFixed(0) +
+                    ", " +
+                    Math.max(...a).toFixed(0) +
+                    "]"
+                  );
+                })
+                .join("　") +
+              " mm · 高度 " +
+              f.z_m.map((z) => +(z * 1000).toFixed(2)).join(" 至 ") +
+              " mm"
+            : "";
+          render();
+        }
+        drag = null;
+      };
+    }
+    $("home").onclick = reset;
+    $("slider").oninput = render;
+    const data = JSON.parse($("embedded").textContent);
+    if (data) readMap(data);
+  </script>
+</html>

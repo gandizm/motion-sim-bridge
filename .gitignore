@@ -6,3 +6,9 @@ local/
 *.jsonl
 /*.json
 /*.xml
+
+/field_map.h
+/viewer.html
+/map_pair.png
+/upper_preview.png
+/viewer_preview.png
