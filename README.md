@@ -7,3 +7,11 @@
 - `HANDOFF.md` 提供两端接入说明。记录资产版本请使用本仓库提交 SHA。运行场景由操作者在本机单独提供。
 
 几何用于近地碰撞与路线预检。轮子外廓覆盖滚子的旋转空间，滚子滚动、侧滑、载荷变形和真实制动距离应通过实测日志校准。
+
+## 运行接触回放
+
+Python 3.11 下执行 `python -m pip install -r requirements.txt` 和 `python demo.py`。自带的圆柱测试台验证平移避让、前进接触、原地转动和左爪扫掠。
+
+`assets/vehicle.xml` 是 MuJoCo 车体模型。可在该 XML 的 worldbody 中添加本机环境几何，将固定接触体设为 contype=1、conaffinity=2 或 6。对需要运动的物体添加自由关节，设 contype=4、conaffinity=7。用 `python replay.py local-scene.xml local-trace.jsonl --out contacts.json` 检查轨迹，添加 `--dynamics` 可估算物体位移。输出记录部件、首次接触时刻和位姿、最后接触时刻和最大穿入深度。航向使用连续展开角。接触检查按最大约 1 毫米扫掠距离插值。
+
+回放按给定轨迹规定底盘位姿，独立设置左右爪角度。俯仰和前推板采用 CAD 装配姿态，传动间隙与制动响应需由控制反馈另行验证。简化碰撞件中的细小安装孔与内部空腔以 STEP 为准。
