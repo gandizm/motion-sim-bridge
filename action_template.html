@@ -1,0 +1,60 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>机构与路线</title><style>
+*{box-sizing:border-box}body{margin:0 auto;padding:16px;max-width:1550px;background:#f1f4f2;color:#243a40;font:15px system-ui,"Microsoft YaHei",sans-serif}h1{font-size:24px;margin:0}header,.tools,.controls{display:flex;gap:10px 16px;align-items:center;flex-wrap:wrap}.tools,.controls,.panel,footer{background:white;border:1px solid #cfdbd7;border-radius:7px;padding:12px;margin:8px 0}button,select{font:inherit;border:1px solid #9aafab;border-radius:5px;padding:6px;background:white}button{cursor:pointer}.pair{display:grid;grid-template-columns:1.08fr 1fr;gap:12px}h2{font-size:16px;margin:0}.panel{min-width:0}canvas{width:100%;height:min(52vh,540px);min-height:245px;display:block}#seek{width:min(35vw,440px)}aside{color:#51696c;font-size:13px}footer strong{display:block;font-size:18px}#note{margin-top:4px}#state{color:#913f36}.controls label{display:flex;gap:4px;align-items:center} @media(max-width:720px){.pair{grid-template-columns:1fr}canvas{height:34vh}}
+</style><header><h1>机构与路线</h1><a id="back" href="pose_check.html">点位摆车</a></header><div class="tools"><label>动作 <select id="cases"></select></label><button id="play">播放</button><button id="end">看末态</button><input id="seek" type="range" min="0" max="1000" value="0"><span id="phase"></span></div>
+<div class="pair"><section class="panel"><h2>全程与首次接触</h2><canvas id="map"></canvas></section><section class="panel"><h2>车身近看 · 圆点为爪轴大孔</h2><canvas id="car"></canvas></section></div>
+<div class="controls"><label>左爪 <input id="left" type="range" min="0" max="270" step=".1"><output id="l"></output></label><label>右爪 <input id="right" type="range" min="0" max="270" step=".1"><output id="r"></output></label><span id="width"></span></div>
+<footer><strong id="state"></strong><div id="note"></div></footer><aside>角度为爪相对车身的机械转角，两侧向外各为正。时间轴按动作分段，播放速度用于看几何。拖动单爪可核对任一静态姿态；实物行程与夹持载荷需要标定。</aside>
+<script id="payload" type="application/json"><!--__DATA__--></script><script>/*__ENGINE__*/</script><script>
+const $=s=>document.getElementById(s),data=JSON.parse($('payload').textContent),model=data.model,check=VehiclePose.engine(data);
+const q=new URLSearchParams(location.search);const bounds=data.map.bounds_m.map(v=>v*1000);
+const input=(k,v)=>q.has(k)&&Number.isFinite(+q.get(k))?+q.get(k):v;
+const origin=[input('x',(bounds[0]+bounds[2])/2-.17*(bounds[2]-bounds[0])),input('y',(bounds[1]+bounds[3])/2),input('yaw',90)];
+$('back').href=data.demo?'pose_check.html':'point_check.html';
+let playing=false,progress=0,active,keys,manual=null,stamp=0;
+for(const c of data.actions){const o=document.createElement('option');o.textContent=c.label;$('cases').append(o)}
+function select(){
+ active={...data.actions[$('cases').selectedIndex]};
+ keys=active.keys.map(k=>active.relative?[origin[0],origin[1],origin[2],k[3],k[4]]:k);
+ if(active.relative && !active.theoretical){
+   for(let i=1;i<keys.length;i++){
+     const a=keys[i-1],z=keys[i],hit=VehiclePose.jawSweep(data,a.slice(0,3),a.slice(3),z.slice(3));
+     if(hit){
+       keys=keys.slice(0,i).concat([a.map((v,k)=>v+(z[k]-v)*hit.t)]);
+       active.hit={part:hit.part,text:(hit.part==='jaw_left'?'左爪':'右爪')+' × '+hit.label};
+       active.planarHit=true;break;
+     }
+   }
+ }
+ progress=0;manual=null;stop();render()
+}
+function stop(){playing=false;$('play').textContent='播放'}
+function current(){const f=progress*(keys.length-1),i=Math.min(keys.length-2,Math.floor(f)),mix=f-i;return keys[i].map((v,k)=>v+(keys[i+1][k]-v)*mix)}
+function tipWidth(l,r){let lo=Infinity,hi=-Infinity;for(const part of model.parts){if(!['wheel','jaw','deck','front','motor','mount'].includes(part.layer))continue;for(const poly of part.polygons)for(const p of poly[0]){const y=VehiclePose.hingePoint(p,part.id,model,l,r)[1];lo=Math.min(lo,y);hi=Math.max(hi,y)}}return hi-lo}
+function draw(cv,p,close,hit){
+ const rect=cv.getBoundingClientRect(),w=rect.width,h=rect.height,dpr=Math.min(2,devicePixelRatio);
+ if(cv.width!==Math.round(w*dpr)||cv.height!==Math.round(h*dpr)){cv.width=Math.round(w*dpr);cv.height=Math.round(h*dpr)}
+ const ctx=cv.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle='#f7f8f6';ctx.fillRect(0,0,w,h);
+ const scale=close?Math.min(w,h)/575:Math.min((w-28)/(bounds[2]-bounds[0]),(h-28)/(bounds[3]-bounds[1]));
+ const cx=close?p[0]:(bounds[0]+bounds[2])/2,cy=close?p[1]:(bounds[1]+bounds[3])/2;
+ const px=(x,y)=>[w/2+(x-cx)*scale,h/2-(y-cy)*scale];
+ for(const f of data.map.features){ctx.fillStyle=f.color;ctx.globalAlpha=['zone','start'].includes(f.layer)?.45:.86;ctx.beginPath();f.xy_m.forEach(([x,y],i)=>{const v=px(x*1000,y*1000);i?ctx.lineTo(...v):ctx.moveTo(...v)});ctx.closePath();ctx.fill()}ctx.globalAlpha=1;
+ if(!close){ctx.beginPath();ctx.strokeStyle='#406b87';ctx.lineWidth=2;ctx.setLineDash([5,4]);(active.request||keys).forEach((k,i)=>i?ctx.lineTo(...px(k[0],k[1])):ctx.moveTo(...px(k[0],k[1])));ctx.stroke();ctx.setLineDash([]);if(active.hit){const a=px(...keys.at(-1).slice(0,2));ctx.strokeStyle='#bf3529';ctx.beginPath();ctx.arc(...a,6,0,2*Math.PI);ctx.stroke()}}
+ VehiclePose.draw(ctx,model,{x_mm:p[0],y_mm:p[1],heading_mdeg:p[2]*1000,left_open_deg:p[3],right_open_deg:p[4]},px,{hit});
+ if(close){const t=p[2]*Math.PI/180;for(const [x,y] of Object.values(model.jaw_pivots)){const pos=px(p[0]+x*Math.cos(t)-y*Math.sin(t),p[1]+x*Math.sin(t)+y*Math.cos(t));ctx.fillStyle='#a33932';ctx.beginPath();ctx.arc(...pos,3,0,Math.PI*2);ctx.fill()}}
+}
+function render(){const p=manual||current(),i=Math.min(keys.length-2,Math.floor(progress*(keys.length-1)));
+ const r=check(p.slice(0,2),p.slice(0,2),p[2],p[3],p[4]),h=r.at.hard;const stopped=!manual&&progress>=.99999&&active.hit;
+ const collide=stopped?active.hit.part:h?.part;
+ draw($('map'),p,false,collide);draw($('car'),p,true,collide);
+ $('phase').textContent=manual?'手动核对':active.phases[i];$('seek').value=Math.round(progress*1000);
+ $('left').value=p[3];$('right').value=p[4];$('l').textContent=p[3].toFixed(1)+'°';$('r').textContent=p[4].toFixed(1)+'°';$('width').textContent='车体当前宽 '+tipWidth(p[3],p[4]).toFixed(1)+' mm';
+ $('state').textContent=stopped?((active.planarHit?'开爪扫掠受阻 · ':'三维回放受阻 · ')+active.hit.text):Math.max(p[3],p[4])>125.26?'已越过水平模型的首次轮爪干涉角，仅作几何展示':h?'当前姿态与固定物相交 · '+h.part+' / '+h.label:(manual?'当前静态姿态':'当前阶段 · '+active.phases[i]);
+ $('note').textContent=active.note;
+}
+function tick(t){if(!playing)return;progress=Math.min(1,progress+(stamp?Math.min(t-stamp,150):0)/(1600*(keys.length-1)));stamp=t;render();if(progress<1)requestAnimationFrame(tick);else stop()}
+$('cases').onchange=select;$('play').onclick=()=>{if(playing){stop();return}if(progress>=1)progress=0;manual=null;playing=true;stamp=0;$('play').textContent='暂停';requestAnimationFrame(tick)};
+$('end').onclick=()=>{stop();manual=null;progress=1;render()};$('seek').oninput=()=>{stop();manual=null;progress=+$('seek').value/1000;render()};
+for(const id of ['left','right'])$(id).oninput=()=>{stop();manual=(manual||current()).slice();manual[3]=+$('left').value;manual[4]=+$('right').value;render()};
+if(q.has('x')&&q.has('y'))$('cases').selectedIndex=data.actions.findIndex(c=>c.relative);
+new ResizeObserver(()=>{if(keys)render()}).observe($('map'));select();
+</script></html>

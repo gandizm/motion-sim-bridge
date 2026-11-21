@@ -4,7 +4,7 @@
 @media(max-width:790px){.pair{grid-template-columns:1fr}canvas{height:45vh}.bar{gap:7px}body{padding:8px}}
 </style><header><h1>点位摆车</h1><span class="source" id="source"></span></header>
 <div class="bar"><button id="goal" aria-pressed="true">点选目标</button><button id="start" aria-pressed="false">点选起点</button><button id="clear">清除起点</button>
-<label>X <input id="x" type="number" step="1"> mm</label><label>Y <input id="y" type="number" step="1"> mm</label><label>车头 <input id="yaw" type="number" step="1" value="90"> °</label><button id="copy">复制点位</button></div>
+<label>X <input id="x" type="number" step="1"> mm</label><label>Y <input id="y" type="number" step="1"> mm</label><label>车头 <input id="yaw" type="number" step="1" value="90"> °</label><button id="copy">复制点位</button><a id="act" href="action_view.html">在此点张爪／分离</a></div>
 <div class="pair"><section><h2>点选场地</h2><canvas id="field"></canvas></section><section><h2>目标点近看</h2><canvas id="zoom"></canvas></section></div>
 <div class="legend" id="layers"></div><div class="result"><div><small>目标姿态</small><b id="endState"></b><span id="endText"></span></div><div><small>同朝向直线进场</small><b id="pathState"></b><span id="pathText"></span></div></div>
 <p class="note">中心十字为车体参考点。+X 向右，+Y 向上，0° 向右，90° 向上。检查采用水平车身、合爪和 CAD 前端零位。斜坡按高度外包络提示复核；物块和减速带的接触单列。图层开关只影响显示。</p>
@@ -66,7 +66,7 @@ function paint(cv,isClose){
  const [u,v]=px(...goal),a=yaw*Math.PI/180;ctx.strokeStyle='#233c42';ctx.beginPath();ctx.moveTo(u-4,v);ctx.lineTo(u+4,v);ctx.moveTo(u,v-4);ctx.lineTo(u,v+4);ctx.moveTo(u,v);ctx.lineTo(u+18*Math.cos(a),v-18*Math.sin(a));ctx.stroke();
  if(isClose){const mm=100,x=12,y=h-15;ctx.fillStyle='#40565b';ctx.fillRect(x,y,mm*scale,2);ctx.font='12px system-ui';ctx.textAlign='left';ctx.fillText('100 mm',x,y-4)}
 }
-function render(){latest=check(start||goal,goal,yaw);show('endState','endText',latest.at,false);show('pathState','pathText',latest.along,true);paint($('field'),false);paint($('zoom'),true)}
+function render(){$('act').href='action_view.html?'+new URLSearchParams({x:goal[0],y:goal[1],yaw});latest=check(start||goal,goal,yaw);show('endState','endText',latest.at,false);show('pathState','pathText',latest.along,true);paint($('field'),false);paint($('zoom'),true)}
 $('field').onclick=e=>{const r=e.currentTarget.getBoundingClientRect(),p=fieldTransform(e.clientX-r.left,e.clientY-r.top);if(mode==='goal')goal=p;else start=p;sync();render()};
 new ResizeObserver(render).observe($('field'));sync();render();
 </script></html>

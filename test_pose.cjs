@@ -67,3 +67,48 @@ assert.equal(result.straight, null);
 console.log(
   "Approved STEP, motor height, wheel direction, swept crossing and pose-only query passed.",
 );
+
+const pivot = data.model.jaw_pivots.jaw_left;
+assert.deepEqual(geo.hingePoint(pivot, "jaw_left", data.model, 220, 0), pivot);
+const startTip = [pivot[0] + 10, pivot[1]];
+const leftTip = geo.hingePoint(startTip, "jaw_left", data.model, 90, 0);
+assert(
+  Math.abs(leftTip[0] - pivot[0]) < 1e-8 &&
+    Math.abs(leftTip[1] - pivot[1] - 10) < 1e-8,
+);
+const fixture = {
+  ...data,
+  model: { jaw_pivots: { jaw_left: [0, 0], jaw_right: [0, 0] } },
+  bands: {
+    h: [
+      [
+        "jaw_left",
+        [
+          [9.99, -0.01],
+          [10.01, -0.01],
+          [10.01, 0.01],
+          [9.99, 0.01],
+        ],
+      ],
+    ],
+  },
+  obstacles: [
+    {
+      label: "fixture",
+      id: "pin",
+      layer: "barrier",
+      band: "h",
+      faces: [
+        [
+          [-0.02, 9.98],
+          [0.02, 9.98],
+          [0.02, 10.02],
+          [-0.02, 10.02],
+        ],
+      ],
+    },
+  ],
+};
+const crossing = geo.jawSweep(fixture, [0, 0, 0], [0, 0], [180, 0]);
+assert(crossing && crossing.t > 0.48 && crossing.t < 0.5);
+assert.equal(geo.jawSweep(fixture, [0, 0, 0], [0, 0], [45, 0]), null);

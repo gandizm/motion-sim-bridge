@@ -4,10 +4,13 @@
 
 ![车体和驱动层俯视图](assets/vehicle_plan.png)
 
+**机构动作。** 打开 [action_view.html](action_view.html) 播放双爪张开、单侧分离与回收，也可从点位页跳到选定位置。两爪各自绕装配的大孔转动。角度为相对合拢姿态的机械角；舵机行程与实际机械角需实机标定。水平装配下最大横向宽度约 430.4 mm，单侧约 125.2° 达到。继续打开会与同侧轮的旋转包络发生干涉。手动大角度视图用于检查这一现象。网页显示机构几何，物块分流效果取决于接触与载荷。
+
 在已有本机地图上使用时，只需生成一次页面。之后可以反复点选，或给同事一个带参数的本机链接。
 
 ```bash
 python pose_check.py --map local/field-map.json --out local/point_check.html
+python action_view.py --map local/field-map.json --out local/action_view.html
 node check_pose.cjs local/point_check.html 100 -80 90
 ```
 

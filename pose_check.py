@@ -147,7 +147,7 @@ def bands_for(model_path, bands):
     return result
 
 
-def build(out, world=None):
+def build_data(world=None):
     world = load_map(world) if world else DEMO
     bands = {}
     obstacles = []
@@ -175,6 +175,11 @@ def build(out, world=None):
         obstacles=obstacles,
         bands=bands_for(BASE / "assets/vehicle.xml", bands),
     )
+    return payload
+
+
+def build(out, world=None):
+    payload = build_data(world)
     html = (BASE / "pose_template.html").read_text(encoding="utf-8-sig")
     html = html.replace(
         "/*__ENGINE__*/", (BASE / "pose_geometry.js").read_text(encoding="utf-8-sig")

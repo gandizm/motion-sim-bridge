@@ -4,7 +4,7 @@
 @media(max-width:790px){.pair{grid-template-columns:1fr}canvas{height:45vh}.bar{gap:7px}body{padding:8px}}
 </style><header><h1>点位摆车</h1><span class="source" id="source"></span></header>
 <div class="bar"><button id="goal" aria-pressed="true">点选目标</button><button id="start" aria-pressed="false">点选起点</button><button id="clear">清除起点</button>
-<label>X <input id="x" type="number" step="1"> mm</label><label>Y <input id="y" type="number" step="1"> mm</label><label>车头 <input id="yaw" type="number" step="1" value="90"> °</label><button id="copy">复制点位</button></div>
+<label>X <input id="x" type="number" step="1"> mm</label><label>Y <input id="y" type="number" step="1"> mm</label><label>车头 <input id="yaw" type="number" step="1" value="90"> °</label><button id="copy">复制点位</button><a id="act" href="action_view.html">在此点张爪／分离</a></div>
 <div class="pair"><section><h2>点选场地</h2><canvas id="field"></canvas></section><section><h2>目标点近看</h2><canvas id="zoom"></canvas></section></div>
 <div class="legend" id="layers"></div><div class="result"><div><small>目标姿态</small><b id="endState"></b><span id="endText"></span></div><div><small>同朝向直线进场</small><b id="pathState"></b><span id="pathText"></span></div></div>
 <p class="note">中心十字为车体参考点。+X 向右，+Y 向上，0° 向右，90° 向上。检查采用水平车身、合爪和 CAD 前端零位。斜坡按高度外包络提示复核；物块和减速带的接触单列。图层开关只影响显示。</p>
@@ -13,6 +13,17 @@
 const VehiclePose = (() => {
   function rotate([x, y], c, s) {
     return [x * c - y * s, x * s + y * c];
+  }
+  function hingePoint(point, part, plan, left, right) {
+    if (part !== "jaw_left" && part !== "jaw_right") return point;
+    const [x, y] = plan.jaw_pivots[part];
+    const angle = ((part === "jaw_left" ? left : -right) * Math.PI) / 180;
+    const [dx, dy] = rotate(
+      [point[0] - x, point[1] - y],
+      Math.cos(angle),
+      Math.sin(angle),
+    );
+    return [x + dx, y + dy];
   }
   function bbox(points) {
     let l = Infinity,
@@ -52,10 +63,9 @@ const VehiclePose = (() => {
   function shape(p) {
     return { p, box: bbox(p), axes: axes(p) };
   }
-  function swept(a, b, start, end) {
+  function swept(a, b, start, end, tol = 0.05) {
     // Time interval shared by every separating axis; includes stationary overlap and touching.
-    const tol = 0.05,
-      dx = end[0] - start[0],
+    const dx = end[0] - start[0],
       dy = end[1] - start[1],
       A = a.box,
       B = b.box;
@@ -90,17 +100,26 @@ const VehiclePose = (() => {
       ...o,
       faces: o.faces.map(shape),
     }));
-    let lastAngle = NaN,
+    let lastAngle = "",
       rotated = {};
-    return (start, end, deg) => {
-      if (deg !== lastAngle) {
+    return (start, end, deg, left = 0, right = 0) => {
+      const key = [deg, left, right].join("/");
+      if (key !== lastAngle) {
         const a = (deg * Math.PI) / 180;
         for (const [k, parts] of Object.entries(data.bands))
           rotated[k] = parts.map(([id, p]) => [
             id,
-            shape(p.map((v) => rotate(v, Math.cos(a), Math.sin(a)))),
+            shape(
+              p.map((v) =>
+                rotate(
+                  hingePoint(v, id, data.model, left, right),
+                  Math.cos(a),
+                  Math.sin(a),
+                ),
+              ),
+            ),
           ]);
-        lastAngle = deg;
+        lastAngle = key;
       }
       const result = { at: {}, along: {} };
       for (const o of obstacles)
@@ -128,6 +147,66 @@ const VehiclePose = (() => {
       return result;
     };
   }
+  function jawSweep(data, pose, from, to) {
+    const [x, y, yaw] = pose,
+      position = [x, y],
+      rad = Math.PI / 180;
+    const stops = data.obstacles.filter((o) => !o.soft && o.layer !== "rim");
+    const c = Math.cos(yaw * rad),
+      s = Math.sin(yaw * rad);
+    const pairs = [];
+    for (const o of stops)
+      for (const face of o.faces) {
+        const target = shape(face);
+        for (const [id, ring] of data.bands[o.band]) {
+          const side = id === "jaw_left" ? 0 : id === "jaw_right" ? 1 : -1;
+          if (side < 0) continue;
+          const pivot = data.model.jaw_pivots[id];
+          const radius = Math.max(
+            ...ring.map((p) => Math.hypot(p[0] - pivot[0], p[1] - pivot[1])),
+          );
+          const [u, v] = rotate(pivot, c, s),
+            box = target.box;
+          if (
+            x + u + radius + 0.06 < box[0] ||
+            x + u - radius - 0.06 > box[2] ||
+            y + v + radius + 0.06 < box[1] ||
+            y + v - radius - 0.06 > box[3]
+          )
+            continue;
+          pairs.push({ target, id, ring, radius, o, side });
+        }
+      }
+    function search(lo, hi, candidates, depth) {
+      const mid = (lo + hi) / 2,
+        angles = from.map((v, k) => v + (to[k] - v) * mid);
+      const possible = candidates.filter((z) => {
+        const pad =
+          0.05 +
+          (z.radius * rad * Math.abs(to[z.side] - from[z.side]) * (hi - lo)) /
+            2;
+        const moving = shape(
+          z.ring.map((p) =>
+            rotate(hingePoint(p, z.id, data.model, ...angles), c, s),
+          ),
+        );
+        return swept(moving, z.target, position, position, pad) !== null;
+      });
+      if (!possible.length) return null;
+      if (
+        depth >= 18 ||
+        Math.max(...from.map((v, k) => Math.abs(v - to[k]))) * (hi - lo) < 0.02
+      ) {
+        const z = possible[0];
+        return { t: lo, part: z.id, label: z.o.label, obstacle: z.o.id };
+      }
+      return (
+        search(lo, mid, possible, depth + 1) ||
+        search(mid, hi, possible, depth + 1)
+      );
+    }
+    return search(0, 1, pairs, 0);
+  }
   function draw(
     ctx,
     plan,
@@ -151,7 +230,17 @@ const VehiclePose = (() => {
       for (const poly of part.polygons)
         for (const ring of poly) {
           ring.forEach((p, i) => {
-            const [dx, dy] = rotate(p, c, s),
+            const [dx, dy] = rotate(
+                hingePoint(
+                  p,
+                  part.id,
+                  plan,
+                  pose.left_open_deg || 0,
+                  pose.right_open_deg || 0,
+                ),
+                c,
+                s,
+              ),
               [px, py] = toPixel(x + dx, y + dy);
             if (i === 0) ctx.moveTo(px, py);
             else ctx.lineTo(px, py);
@@ -166,7 +255,7 @@ const VehiclePose = (() => {
     }
     ctx.restore();
   }
-  return { draw, engine, swept, shape };
+  return { draw, engine, swept, shape, hingePoint, jawSweep };
 })();
 if (typeof module !== "undefined" && module.exports)
   module.exports = VehiclePose;
@@ -227,7 +316,7 @@ function paint(cv,isClose){
  const [u,v]=px(...goal),a=yaw*Math.PI/180;ctx.strokeStyle='#233c42';ctx.beginPath();ctx.moveTo(u-4,v);ctx.lineTo(u+4,v);ctx.moveTo(u,v-4);ctx.lineTo(u,v+4);ctx.moveTo(u,v);ctx.lineTo(u+18*Math.cos(a),v-18*Math.sin(a));ctx.stroke();
  if(isClose){const mm=100,x=12,y=h-15;ctx.fillStyle='#40565b';ctx.fillRect(x,y,mm*scale,2);ctx.font='12px system-ui';ctx.textAlign='left';ctx.fillText('100 mm',x,y-4)}
 }
-function render(){latest=check(start||goal,goal,yaw);show('endState','endText',latest.at,false);show('pathState','pathText',latest.along,true);paint($('field'),false);paint($('zoom'),true)}
+function render(){$('act').href='action_view.html?'+new URLSearchParams({x:goal[0],y:goal[1],yaw});latest=check(start||goal,goal,yaw);show('endState','endText',latest.at,false);show('pathState','pathText',latest.along,true);paint($('field'),false);paint($('zoom'),true)}
 $('field').onclick=e=>{const r=e.currentTarget.getBoundingClientRect(),p=fieldTransform(e.clientX-r.left,e.clientY-r.top);if(mode==='goal')goal=p;else start=p;sync();render()};
 new ResizeObserver(render).observe($('field'));sync();render();
 </script></html>

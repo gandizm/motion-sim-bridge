@@ -3,6 +3,17 @@ const VehiclePose = (() => {
   function rotate([x, y], c, s) {
     return [x * c - y * s, x * s + y * c];
   }
+  function hingePoint(point, part, plan, left, right) {
+    if (part !== "jaw_left" && part !== "jaw_right") return point;
+    const [x, y] = plan.jaw_pivots[part];
+    const angle = ((part === "jaw_left" ? left : -right) * Math.PI) / 180;
+    const [dx, dy] = rotate(
+      [point[0] - x, point[1] - y],
+      Math.cos(angle),
+      Math.sin(angle),
+    );
+    return [x + dx, y + dy];
+  }
   function bbox(points) {
     let l = Infinity,
       b = Infinity,
@@ -41,10 +52,9 @@ const VehiclePose = (() => {
   function shape(p) {
     return { p, box: bbox(p), axes: axes(p) };
   }
-  function swept(a, b, start, end) {
+  function swept(a, b, start, end, tol = 0.05) {
     // Time interval shared by every separating axis; includes stationary overlap and touching.
-    const tol = 0.05,
-      dx = end[0] - start[0],
+    const dx = end[0] - start[0],
       dy = end[1] - start[1],
       A = a.box,
       B = b.box;
@@ -79,17 +89,26 @@ const VehiclePose = (() => {
       ...o,
       faces: o.faces.map(shape),
     }));
-    let lastAngle = NaN,
+    let lastAngle = "",
       rotated = {};
-    return (start, end, deg) => {
-      if (deg !== lastAngle) {
+    return (start, end, deg, left = 0, right = 0) => {
+      const key = [deg, left, right].join("/");
+      if (key !== lastAngle) {
         const a = (deg * Math.PI) / 180;
         for (const [k, parts] of Object.entries(data.bands))
           rotated[k] = parts.map(([id, p]) => [
             id,
-            shape(p.map((v) => rotate(v, Math.cos(a), Math.sin(a)))),
+            shape(
+              p.map((v) =>
+                rotate(
+                  hingePoint(v, id, data.model, left, right),
+                  Math.cos(a),
+                  Math.sin(a),
+                ),
+              ),
+            ),
           ]);
-        lastAngle = deg;
+        lastAngle = key;
       }
       const result = { at: {}, along: {} };
       for (const o of obstacles)
@@ -117,6 +136,66 @@ const VehiclePose = (() => {
       return result;
     };
   }
+  function jawSweep(data, pose, from, to) {
+    const [x, y, yaw] = pose,
+      position = [x, y],
+      rad = Math.PI / 180;
+    const stops = data.obstacles.filter((o) => !o.soft && o.layer !== "rim");
+    const c = Math.cos(yaw * rad),
+      s = Math.sin(yaw * rad);
+    const pairs = [];
+    for (const o of stops)
+      for (const face of o.faces) {
+        const target = shape(face);
+        for (const [id, ring] of data.bands[o.band]) {
+          const side = id === "jaw_left" ? 0 : id === "jaw_right" ? 1 : -1;
+          if (side < 0) continue;
+          const pivot = data.model.jaw_pivots[id];
+          const radius = Math.max(
+            ...ring.map((p) => Math.hypot(p[0] - pivot[0], p[1] - pivot[1])),
+          );
+          const [u, v] = rotate(pivot, c, s),
+            box = target.box;
+          if (
+            x + u + radius + 0.06 < box[0] ||
+            x + u - radius - 0.06 > box[2] ||
+            y + v + radius + 0.06 < box[1] ||
+            y + v - radius - 0.06 > box[3]
+          )
+            continue;
+          pairs.push({ target, id, ring, radius, o, side });
+        }
+      }
+    function search(lo, hi, candidates, depth) {
+      const mid = (lo + hi) / 2,
+        angles = from.map((v, k) => v + (to[k] - v) * mid);
+      const possible = candidates.filter((z) => {
+        const pad =
+          0.05 +
+          (z.radius * rad * Math.abs(to[z.side] - from[z.side]) * (hi - lo)) /
+            2;
+        const moving = shape(
+          z.ring.map((p) =>
+            rotate(hingePoint(p, z.id, data.model, ...angles), c, s),
+          ),
+        );
+        return swept(moving, z.target, position, position, pad) !== null;
+      });
+      if (!possible.length) return null;
+      if (
+        depth >= 18 ||
+        Math.max(...from.map((v, k) => Math.abs(v - to[k]))) * (hi - lo) < 0.02
+      ) {
+        const z = possible[0];
+        return { t: lo, part: z.id, label: z.o.label, obstacle: z.o.id };
+      }
+      return (
+        search(lo, mid, possible, depth + 1) ||
+        search(mid, hi, possible, depth + 1)
+      );
+    }
+    return search(0, 1, pairs, 0);
+  }
   function draw(
     ctx,
     plan,
@@ -140,7 +219,17 @@ const VehiclePose = (() => {
       for (const poly of part.polygons)
         for (const ring of poly) {
           ring.forEach((p, i) => {
-            const [dx, dy] = rotate(p, c, s),
+            const [dx, dy] = rotate(
+                hingePoint(
+                  p,
+                  part.id,
+                  plan,
+                  pose.left_open_deg || 0,
+                  pose.right_open_deg || 0,
+                ),
+                c,
+                s,
+              ),
               [px, py] = toPixel(x + dx, y + dy);
             if (i === 0) ctx.moveTo(px, py);
             else ctx.lineTo(px, py);
@@ -155,7 +244,7 @@ const VehiclePose = (() => {
     }
     ctx.restore();
   }
-  return { draw, engine, swept, shape };
+  return { draw, engine, swept, shape, hingePoint, jawSweep };
 })();
 if (typeof module !== "undefined" && module.exports)
   module.exports = VehiclePose;
