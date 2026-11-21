@@ -1,5 +1,20 @@
 # Motion Sim Bridge
 
+**只查一个点位**请直接打开 [pose_check.html](pose_check.html)。点地图或输入 X、Y（毫米）和车头朝向（度），可见目标姿态、放大投影和相交部件。点击“点选起点”可附加检查同一朝向的直线平移段。页面自带独立测试台，可离线使用。
+
+![车体和驱动层俯视图](assets/vehicle_plan.png)
+
+在已有本机地图上使用时，只需生成一次页面。之后可以反复点选，或给同事一个带参数的本机链接。
+
+```bash
+python pose_check.py --map local/field-map.json --out local/point_check.html
+node check_pose.cjs local/point_check.html 100 -80 90
+```
+
+最后三个数依次为目标 X_mm、Y_mm、航向度；可在后面追加起点 X_mm、Y_mm。Node 命令和网页用同一套几何内核，返回目标姿态、直达段、接触部件和查看链接。几何姿态为水平底盘、合爪、前端零位。二维显示来自 STEP，固定物判定由碰撞模型的各凸件按障碍高度裁剪，固定航向的平移采用连续分离轴检查。不可动物按其地图多边形和高度区间处理，坡边取保守外包络。可动物体或减速带相交时单列复核。几何可放仅说明名义尺寸下能摆下，定位误差、转向及绕行另行验证。
+
+已有 Canvas 页面可以用 `pose_geometry.js` 的 `VehiclePose.draw(ctx, plan, {x_mm,y_mm,heading_mdeg}, worldToPixel)`；plan 直接读 `assets/vehicle_plan.json`，worldToPixel 接收场地毫米并返回屏幕像素。轮廓已带碳板缺口、电机、支架、轮组和前端，无需重画。
+
 这是供运动规划、嵌入式控制和回放验证共用的几何基线。车体坐标以三轮轴线在水平面上的交点为原点，原点高度在地面，+X 朝前，+Y 朝左，+Z 朝上。STEP 和二维轮廓使用毫米，MuJoCo 模型使用米。轨迹使用米、秒和角度，航向从地图 +X 朝 +Y 逆时针为正。
 
 - `assets/vehicle.step` 为可单独打开的装配。三只全向轮以旋转外廓替代细滚子，顶部定位器用外包络表示，左右爪、舵机支架、前推板和底盘保留 CAD 几何。

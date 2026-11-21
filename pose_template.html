@@ -1,0 +1,72 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>点位摆车</title>
+<style>
+*{box-sizing:border-box}body{max-width:1650px;margin:auto;padding:18px;background:#f0f3f2;color:#26383e;font:15px system-ui,"Microsoft YaHei",sans-serif}h1{font-size:24px;margin:0}h2{font-size:16px;margin:0}header,.bar,.legend,.result{display:flex;gap:12px;align-items:center;flex-wrap:wrap}header{justify-content:space-between}.bar,.result,section{padding:10px 14px;background:white;border:1px solid #ccd6d3;border-radius:6px}.bar{margin:10px 0}.pair{display:grid;grid-template-columns:1.15fr 1fr;gap:12px}section{min-width:0}canvas{width:100%;height:min(55vh,560px);min-height:255px;display:block;touch-action:manipulation}button,input{font:inherit;color:inherit}button{padding:6px 10px;background:white;border:1px solid #afbfbc;border-radius:4px;cursor:pointer}button[aria-pressed=true]{background:#315a62;color:white}input[type=number]{width:82px;padding:5px;border:1px solid #a5b6b3;border-radius:4px}input[type=checkbox]{vertical-align:middle}.result{align-items:start;margin-top:10px}.result>div{flex:1;min-width:250px}.result b{display:block;font-size:18px}.good{color:#22664c}.bad{color:#a43228}.warn{color:#855811}.note{font-size:13px;color:#576969}.legend{gap:9px 16px;margin:10px 0}.dot{width:12px;height:12px;display:inline-block;vertical-align:middle;border:1px solid #60716b;margin-right:4px}.source{font-size:13px;color:#48615d}
+@media(max-width:790px){.pair{grid-template-columns:1fr}canvas{height:45vh}.bar{gap:7px}body{padding:8px}}
+</style><header><h1>点位摆车</h1><span class="source" id="source"></span></header>
+<div class="bar"><button id="goal" aria-pressed="true">点选目标</button><button id="start" aria-pressed="false">点选起点</button><button id="clear">清除起点</button>
+<label>X <input id="x" type="number" step="1"> mm</label><label>Y <input id="y" type="number" step="1"> mm</label><label>车头 <input id="yaw" type="number" step="1" value="90"> °</label><button id="copy">复制点位</button></div>
+<div class="pair"><section><h2>点选场地</h2><canvas id="field"></canvas></section><section><h2>目标点近看</h2><canvas id="zoom"></canvas></section></div>
+<div class="legend" id="layers"></div><div class="result"><div><small>目标姿态</small><b id="endState"></b><span id="endText"></span></div><div><small>同朝向直线进场</small><b id="pathState"></b><span id="pathText"></span></div></div>
+<p class="note">中心十字为车体参考点。+X 向右，+Y 向上，0° 向右，90° 向上。检查采用水平车身、合爪和 CAD 前端零位。斜坡按高度外包络提示复核；物块和减速带的接触单列。图层开关只影响显示。</p>
+<script type="application/json" id="payload"><!--__DATA__--></script>
+<script>/*__ENGINE__*/</script><script>
+'use strict';
+const $=s=>document.getElementById(s),data=JSON.parse($('payload').textContent),plan=data.model,check=VehiclePose.engine(data);
+const bounds=data.map.bounds_m.map(n=>1000*n), W=bounds[2]-bounds[0], H=bounds[3]-bounds[1],mid=[(bounds[0]+bounds[2])/2,(bounds[1]+bounds[3])/2];
+const q=new URLSearchParams(location.search), num=(k,f)=>q.has(k)&&q.get(k).trim()!==''&&Number.isFinite(+q.get(k))?+q.get(k):f;
+let goal=[num('x',Math.round(mid[0]-.18*W)),num('y',Math.round(mid[1]))],start=q.has('sx')&&q.has('sy')?[num('sx',goal[0]),num('sy',goal[1])]:null;
+let yaw=num('yaw',90),mode='goal',visible=new Set(Object.keys(plan.layers)),fieldTransform,latest;
+$('source').textContent=data.demo?'独立示例场地':'本机场地';
+function partName(id){const end=id.startsWith('wheel_')?id.slice(6):id;const side=end.startsWith('left')?'左':end.startsWith('right')?'右':end.startsWith('rear')?'后':'';if(id.startsWith('wheel_'))return side+'轮';if(id.endsWith('_motor'))return side+'电机';return ({deck:'碳板',jaw_left:'左爪',jaw_right:'右爪',blade:'推板',jaw_carrier:'爪架',sensor:'定位器',tilt_arm:'转臂',tilt_mount:'转臂座'})[id]||id}
+function colorButton(){for(const id of ['goal','start'])$(id).setAttribute('aria-pressed',String(mode===id))}
+for(const id of ['goal','start'])$(id).onclick=()=>{mode=id;colorButton()};
+$('clear').onclick=()=>{start=null;mode='goal';colorButton();render()};
+for(const [k,layer] of Object.entries(plan.layers)){const l=document.createElement('label'),c=document.createElement('input'),s=document.createElement('i');c.type='checkbox';c.checked=true;c.onchange=()=>{if(c.checked)visible.add(k);else visible.delete(k);render()};s.className='dot';s.style.background=layer[1];l.append(c,s,layer[0]);$('layers').append(l)}
+function vals(){for(const id of ['x','y','yaw'])if($(id).value===''||!Number.isFinite($(id).valueAsNumber)){for(const name of ['endState','pathState']){$(name).textContent='请补全坐标和朝向';$(name).className='warn'}$('endText').textContent=$('pathText').textContent='';return;}goal=[$('x').valueAsNumber,$('y').valueAsNumber];yaw=$('yaw').valueAsNumber;render()}
+for(const id of ['x','y','yaw'])$(id).oninput=vals;
+function sync(){ $('x').value=goal[0];$('y').value=goal[1];$('yaw').value=yaw }
+$('copy').onclick=async()=>{const text=JSON.stringify({x_mm:goal[0],y_mm:goal[1],heading_mdeg:Math.round(yaw*1000),...(start?{from_mm:start}:{})});try{await navigator.clipboard.writeText(text);$('copy').textContent='已复制';setTimeout(()=>$('copy').textContent='复制点位',1200)}catch{prompt('复制点位',text)}};
+function inside(p){return p[0]>=bounds[0]&&p[0]<=bounds[2]&&p[1]>=bounds[1]&&p[1]<=bounds[3]}
+function show(id,sub,res,route){
+ const hit=res.hard||res.review;const out=!inside(goal)||(route&&start&&!inside(start));
+ $(id).className=out||hit?(hit===res.review&&!out?'warn':'bad'):'good';
+ if(route&&!start){$(id).className='';$(id).textContent='待选起点';$(sub).textContent='点“点选起点”，再点地图。';return}
+ $(id).textContent=out?'参考点超出地图':res.hard?'固定障碍相交':res.review?'坡面需复核':res.soft?'有接触，需复核':route?'直线段可通过':'几何可摆放';
+ if(res.soft&&!hit&&!out)$(id).className='warn';
+ const notes=[];
+ if(hit)notes.push(partName(hit.part)+' × '+hit.label+' ('+hit.obstacle+')'+(route?'，距起点 '+Math.round(hit.t*Math.hypot(goal[0]-start[0],goal[1]-start[1]))+' mm':''));
+ if(res.soft)notes.push('接触 '+partName(res.soft.part)+' × '+res.soft.label);
+ if(route)notes.push('起点 ('+start.join(', ')+') mm');
+ if(!notes.length&&!out)notes.push('按当前模型与障碍高度检查');
+ $(sub).textContent=notes.join('　');
+}
+function paint(cv,isClose){
+ const rect=cv.getBoundingClientRect(),w=rect.width,h=rect.height,dpr=Math.min(devicePixelRatio,2);
+ const sw=Math.round(w*dpr),sh=Math.round(h*dpr);if(cv.width!==sw||cv.height!==sh){cv.width=sw;cv.height=sh}
+ const ctx=cv.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
+ const center=isClose?goal:mid,scale=isClose?Math.min(w,h)/575:Math.min((w-24)/W,(h-24)/H);
+ const px=(x,y)=>[w/2+(x-center[0])*scale,h/2-(y-center[1])*scale];
+ if(!isClose)fieldTransform=(x,y)=>[Math.round(center[0]+(x-w/2)/scale),Math.round(center[1]-(y-h/2)/scale)];
+ ctx.fillStyle='#f6f7f4';ctx.fillRect(0,0,w,h);
+ for(const f of data.map.features){
+    ctx.fillStyle=f.color;ctx.globalAlpha=['zone','start'].includes(f.layer)?.38:.78;ctx.beginPath();
+    f.xy_m.forEach(([x,y],i)=>{const [u,v]=px(x*1000,y*1000);i?ctx.lineTo(u,v):ctx.moveTo(u,v)});ctx.closePath();ctx.fill();
+ }ctx.globalAlpha=1;
+ if(!isClose){ctx.font='12px system-ui';ctx.textAlign='center';ctx.fillStyle='#293e44';for(const l of data.map.labels||[]){const a=px(1000*l.x_m,1000*l.y_m);ctx.fillText(l.text,...a)}}
+ const pose=p=>({x_mm:p[0],y_mm:p[1],heading_mdeg:yaw*1000});
+ const endHit=latest.at.hard||latest.at.review||latest.at.soft;
+ if(start){
+    VehiclePose.draw(ctx,plan,pose(start),px,{layers:visible,alpha:.4,outline:true});
+    const a=px(...start),b=px(...goal);ctx.setLineDash([5,4]);ctx.strokeStyle='#345657';ctx.beginPath();ctx.moveTo(...a);ctx.lineTo(...b);ctx.stroke();ctx.setLineDash([]);
+    const hit=latest.along.hard||latest.along.review;
+    if(hit){const [u,v]=px(...hit.point);ctx.beginPath();ctx.arc(u,v,5,0,Math.PI*2);ctx.strokeStyle='#ab372d';ctx.stroke();
+      if(!isClose&&hit.t<.995)VehiclePose.draw(ctx,plan,pose(hit.point),px,{layers:visible,alpha:.6,outline:true,hit:hit.part})}
+ }
+ VehiclePose.draw(ctx,plan,pose(goal),px,{layers:visible,hit:endHit?.part});
+ const [u,v]=px(...goal),a=yaw*Math.PI/180;ctx.strokeStyle='#233c42';ctx.beginPath();ctx.moveTo(u-4,v);ctx.lineTo(u+4,v);ctx.moveTo(u,v-4);ctx.lineTo(u,v+4);ctx.moveTo(u,v);ctx.lineTo(u+18*Math.cos(a),v-18*Math.sin(a));ctx.stroke();
+ if(isClose){const mm=100,x=12,y=h-15;ctx.fillStyle='#40565b';ctx.fillRect(x,y,mm*scale,2);ctx.font='12px system-ui';ctx.textAlign='left';ctx.fillText('100 mm',x,y-4)}
+}
+function render(){latest=check(start||goal,goal,yaw);show('endState','endText',latest.at,false);show('pathState','pathText',latest.along,true);paint($('field'),false);paint($('zoom'),true)}
+$('field').onclick=e=>{const r=e.currentTarget.getBoundingClientRect(),p=fieldTransform(e.clientX-r.left,e.clientY-r.top);if(mode==='goal')goal=p;else start=p;sync();render()};
+new ResizeObserver(render).observe($('field'));sync();render();
+</script></html>
